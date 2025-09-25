@@ -1,0 +1,9 @@
+torch
+torchvision
+torchaudio
+opencv-python-headless
+pandas
+numpy
+tqdm
+albumentations
+segmentation-models-pytorch
