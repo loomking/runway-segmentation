@@ -9,6 +9,7 @@ from dataset import RunwayDataset, get_transforms
 from model import RunwayDetector
 from loss import CombinedLoss
 
+
 def train_fn(loader, model, optimizer, loss_fn, scaler, device):
     """A single training epoch."""
     loop = tqdm(loader, leave=True)
@@ -20,8 +21,8 @@ def train_fn(loader, model, optimizer, loss_fn, scaler, device):
         seg_targets = data["mask"].to(device=device)
         line_targets = data["lines"].to(device=device)
 
-        # Forward
-        with torch.cuda.amp.autocast():
+        # Forward with AMP
+        with torch.amp.autocast("cuda"):
             seg_preds, line_preds = model(images)
             loss = loss_fn(seg_preds, line_preds, seg_targets, line_targets)
 
@@ -49,7 +50,7 @@ def main():
 
     loss_fn = CombinedLoss()
     optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler("cuda")
 
     # Create DataLoaders
     train_transform = get_transforms(config.IMAGE_WIDTH, config.IMAGE_HEIGHT)
@@ -67,7 +68,7 @@ def main():
         shuffle=True
     )
 
-    best_loss = float('inf')
+    best_loss = float("inf")
     epochs_no_improve = 0
 
     for epoch in range(config.NUM_EPOCHS):
@@ -87,6 +88,7 @@ def main():
         if epochs_no_improve >= config.EARLY_STOPPING_PATIENCE:
             print(f"Early stopping triggered after {epoch+1} epochs.")
             break
+
 
 if __name__ == "__main__":
     main()
