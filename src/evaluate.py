@@ -1,63 +1,88 @@
-# src/evaluate.py
+import os
+import torch
 import numpy as np
+import pandas as pd
+from tqdm import tqdm
+from torch.utils.data import DataLoader
 
-def calculate_iou(pred_mask, gt_mask):
-    """
-    Calculates the Intersection over Union (IoU) score for segmentation masks.
-    """
-    intersection = np.logical_and(pred_mask, gt_mask).sum()
-    union = np.logical_or(pred_mask, gt_mask).sum()
-    iou_score = intersection / union if union > 0 else 0
-    return iou_score
+import config
+from model import RunwayDetector
+from dataset import RunwayDataset, get_transforms
+from metrics import iou_score, anchor_score, boolean_score
 
-def calculate_anchor_score(pred_lines, gt_lines):
-    """
-    Placeholder for the Anchor Score calculation.
-    This will depend on the specific definition of the score in the project details.
-    Typically, it involves measuring the distance between predicted and ground truth line endpoints.
-    """
-    # Example: Calculate Mean Squared Error between coordinates
-    # This is a simplified version and should be replaced with the official metric.
-    if not gt_lines or not pred_lines:
-        return 0.0
-    
-    pred = np.array(pred_lines).flatten()
-    gt = np.array(gt_lines).flatten()
-    
-    # Ensure arrays have the same length
-    min_len = min(len(pred), len(gt))
-    pred = pred[:min_len]
-    gt = gt[:min_len]
+def main():
+    device = torch.device(config.DEVICE)
 
-    mse = np.mean((pred - gt) ** 2)
-    # A lower MSE is better. You might need to invert or scale it.
-    # For example, score = 1 / (1 + mse)
-    score = 1 / (1 + np.sqrt(mse))
-    return score
+    model = RunwayDetector(encoder=config.PRETRAINED_ENCODER, encoder_weights=None).to(device)
+    model_path = os.path.join(config.MODEL_OUTPUT_DIR, "best_model.pth")
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
+    print("Model loaded successfully.")
 
-def calculate_boolean_score(pred_left_edge, pred_right_edge, pred_center_line):
-    """
-    Placeholder for the Boolean Score calculation.
-    Checks if the predicted center line is located between the left and right edges.
-    """
-    # This requires a geometric check. A simple way is to check if the x-coordinates
-    # of the centerline fall between the x-coordinates of the edges.
-    # This is a simplified check and assumes lines are mostly vertical.
-    
-    # Assuming pred_left_edge = [x1, y1, x2, y2]
-    # We take the average x-coordinate
-    if not pred_left_edge or not pred_right_edge or not pred_center_line:
-        return 0
-        
-    left_x_avg = (pred_left_edge[0] + pred_left_edge[2]) / 2
-    right_x_avg = (pred_right_edge[0] + pred_right_edge[2]) / 2
-    center_x_avg = (pred_center_line[0] + pred_center_line[2]) / 2
+    val_transform = get_transforms(config.IMAGE_WIDTH, config.IMAGE_HEIGHT)
+    val_dataset = RunwayDataset(
+        image_dir=config.VAL_IMG_DIR,
+        mask_dir=config.VAL_MASK_DIR,
+        line_json_path=config.VAL_LINE_JSON,
+        transform=val_transform
+    )
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
 
-    # Ensure left is actually to the left of right
-    min_x = min(left_x_avg, right_x_avg)
-    max_x = max(left_x_avg, right_x_avg)
+    results_list = []
 
-    if min_x < center_x_avg < max_x:
-        return 1
-    else:
-        return 0
+    with torch.no_grad():
+        for i, (image, gt_mask, gt_norm_coords) in enumerate(tqdm(val_loader, desc="Evaluating")):
+            image_name = val_dataset.image_files[i]
+            image = image.to(device)
+
+            pred_mask_logits, pred_norm_coords = model(image)
+
+            pred_mask = (torch.sigmoid(pred_mask_logits) > config.CONFIDENCE_THRESHOLD).cpu().numpy().squeeze()
+            pred_coords = pred_norm_coords.cpu().numpy().flatten()
+            pred_coords[0::2] *= config.IMAGE_WIDTH
+            pred_coords[1::2] *= config.IMAGE_HEIGHT
+
+            gt_mask = gt_mask.numpy().squeeze()
+            gt_coords = gt_norm_coords.numpy().flatten()
+            gt_coords[0::2] *= config.IMAGE_WIDTH
+            gt_coords[1::2] *= config.IMAGE_HEIGHT
+
+            iou = iou_score(gt_mask, pred_mask)
+            anchor = anchor_score(gt_coords, pred_coords)
+            boolean = boolean_score(pred_coords)
+            mean_score = np.mean([iou, anchor, boolean])
+
+            results_list.append({
+                'Image Name': image_name,
+                'IOU score': iou,
+                'Anchor Score': anchor,
+                'Boolen_score': boolean,
+                'Mean Score': mean_score
+            })
+
+    df = pd.DataFrame(results_list)
+
+    mean_row = {
+        'Image Name': 'Mean Score',
+        'IOU score': df['IOU score'].mean(),
+        'Anchor Score': df['Anchor Score'].mean(),
+        'Boolen_score': df['Boolen_score'].mean(),
+        'Mean Score': df['Mean Score'].mean()
+    }
+
+    mean_df = pd.DataFrame([mean_row])
+    df_final = pd.concat([df, mean_df], ignore_index=True)
+
+    output_path = os.path.join(config.RESULTS_OUTPUT_DIR, "submission.csv")
+    df_final.to_csv(output_path, index=False)
+
+    print("\n--- Evaluation Complete ---")
+    print(f"Mean IoU Score:     {mean_row['IOU score']:.4f}")
+    print(f"Mean Anchor Score:  {mean_row['Anchor Score']:.4f}")
+    print(f"Mean Boolean Score: {mean_row['Boolen_score']:.4f}")
+    print(f"\nSubmission file saved to: {output_path}")
+
+
+if __name__ == "__main__":
+    main()
+

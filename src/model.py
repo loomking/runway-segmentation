@@ -1,44 +1,45 @@
-# src/model.py
 import torch
 import torch.nn as nn
 import segmentation_models_pytorch as smp
 
 class RunwayDetector(nn.Module):
-    """
-    A U-Net based model with a pretrained encoder for simultaneous runway
-    segmentation and line coordinate prediction.
-    """
-    def __init__(self, encoder='resnet34', encoder_weights='imagenet', num_seg_classes=2, num_line_coords=12):
+    def __init__(self, encoder='resnet34', encoder_weights='imagenet'):
         super(RunwayDetector, self).__init__()
 
-        # --- Segmentation Head ---
-        self.seg_model = smp.Unet(
+        smp_model = smp.Unet(
             encoder_name=encoder,
             encoder_weights=encoder_weights,
             in_channels=3,
-            classes=num_seg_classes,
+            classes=1,
         )
+        
+        self.encoder = smp_model.encoder
+        self.decoder = smp_model.decoder
+        self.segmentation_head = smp_model.segmentation_head
 
-        # --- Line Prediction (Regression) Head ---
-        encoder_out_channels = self.seg_model.encoder.out_channels[-1]
+        encoder_out_channels = self.encoder.out_channels[-1]
 
         self.regression_head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # Global Average Pooling
+            nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(encoder_out_channels, 512),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(512, num_line_coords)
+            nn.Linear(512, 12),
+            nn.Sigmoid()
         )
 
     def forward(self, x):
-        # Segmentation output directly from SMP Unet
-        seg_mask = self.seg_model(x)  # (B, num_seg_classes, H, W)
-
-        # Extract encoder features for line regression
-        features = self.seg_model.encoder(x)
-        bottleneck = features[-1]  # deepest feature map
-
+        features = self.encoder(x)
+        
+        bottleneck = features[-1]
+        
+        # --- THE FIX ---
+        # Pass the 'features' list as a single argument, without the '*'
+        decoder_output = self.decoder(features)
+        
+        seg_mask = self.segmentation_head(decoder_output)
         line_coords = self.regression_head(bottleneck)
 
         return seg_mask, line_coords
+
